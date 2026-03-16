@@ -13,12 +13,20 @@ vi.mock("@/hooks/use-dark-mode", () => ({
 }))
 
 describe("SideNav", () => {
-  it("calls onViewChange for Home and Settings", async () => {
+  it("calls onViewChange for Home and opens settings separately", async () => {
     const onViewChange = vi.fn()
-    render(<SideNav activeView="home" onViewChange={onViewChange} plugins={[]} />)
+    const onOpenSettings = vi.fn()
+    render(
+      <SideNav
+        activeView="home"
+        onViewChange={onViewChange}
+        onOpenSettings={onOpenSettings}
+        plugins={[]}
+      />
+    )
 
     await userEvent.click(screen.getByRole("button", { name: "Settings" }))
-    expect(onViewChange).toHaveBeenCalledWith("settings")
+    expect(onOpenSettings).toHaveBeenCalledTimes(1)
 
     await userEvent.click(screen.getByRole("button", { name: "Home" }))
     expect(onViewChange).toHaveBeenCalledWith("home")

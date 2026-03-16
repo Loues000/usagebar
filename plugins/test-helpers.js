@@ -52,6 +52,9 @@ export const makeCtx = () => {
       http: {
         request: vi.fn(),
       },
+      providerSecrets: {
+        read: vi.fn(() => null),
+      },
       ls: {
         discover: vi.fn(() => null),
       },
