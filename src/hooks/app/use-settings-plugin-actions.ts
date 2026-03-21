@@ -26,9 +26,29 @@ export function useSettingsPluginActions({
   const handleReorder = useCallback((orderedIds: string[]) => {
     if (!pluginSettings) return
     track("providers_reordered", { count: orderedIds.length })
+    const savedOrder = pluginSettings.order ?? []
+    const orderedSet = new Set(orderedIds)
+    const missingIds = savedOrder.filter((id) => !orderedSet.has(id))
+    const mergedOrder = [...orderedIds]
+
+    for (const missingId of missingIds) {
+      const savedIndex = (pluginSettings.order ?? []).indexOf(missingId)
+      let insertAt = 0
+
+      for (let index = mergedOrder.length - 1; index >= 0; index -= 1) {
+        const mergedSavedIndex = (pluginSettings.order ?? []).indexOf(mergedOrder[index])
+        if (mergedSavedIndex < savedIndex) {
+          insertAt = index + 1
+          break
+        }
+      }
+
+      mergedOrder.splice(insertAt, 0, missingId)
+    }
+
     const nextSettings: PluginSettings = {
       ...pluginSettings,
-      order: orderedIds,
+      order: mergedOrder,
     }
     setPluginSettings(nextSettings)
     scheduleTrayIconUpdate("settings", TRAY_SETTINGS_DEBOUNCE_MS)
