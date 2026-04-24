@@ -5,7 +5,7 @@ const {
   arePluginSettingsEqualMock,
   disableAutostartMock,
   enableAutostartMock,
-  getEnabledPluginIdsMock,
+  getProbeEligiblePluginIdsMock,
   invokeMock,
   isAutostartEnabledMock,
   isTauriMock,
@@ -27,7 +27,7 @@ const {
   enableAutostartMock: vi.fn(),
   disableAutostartMock: vi.fn(),
   arePluginSettingsEqualMock: vi.fn(),
-  getEnabledPluginIdsMock: vi.fn(),
+  getProbeEligiblePluginIdsMock: vi.fn(),
   loadAutoUpdateIntervalMock: vi.fn(),
   loadDisplayModeMock: vi.fn(),
   loadGlobalShortcutMock: vi.fn(),
@@ -61,7 +61,7 @@ vi.mock("@/lib/settings", () => ({
   DEFAULT_RESET_TIMER_DISPLAY_MODE: "relative",
   DEFAULT_START_ON_LOGIN: false,
   DEFAULT_THEME_MODE: "system",
-  getEnabledPluginIds: getEnabledPluginIdsMock,
+  getProbeEligiblePluginIds: getProbeEligiblePluginIdsMock,
   loadAutoUpdateInterval: loadAutoUpdateIntervalMock,
   loadDisplayMode: loadDisplayModeMock,
   loadGlobalShortcut: loadGlobalShortcutMock,
@@ -102,7 +102,7 @@ describe("useSettingsBootstrap", () => {
     enableAutostartMock.mockReset()
     disableAutostartMock.mockReset()
     arePluginSettingsEqualMock.mockReset()
-    getEnabledPluginIdsMock.mockReset()
+    getProbeEligiblePluginIdsMock.mockReset()
     loadAutoUpdateIntervalMock.mockReset()
     loadDisplayModeMock.mockReset()
     loadGlobalShortcutMock.mockReset()
@@ -139,7 +139,7 @@ describe("useSettingsBootstrap", () => {
     loadStartOnLoginMock.mockResolvedValue(true)
     migrateLegacyTraySettingsMock.mockResolvedValue(undefined)
     savePluginSettingsMock.mockResolvedValue(undefined)
-    getEnabledPluginIdsMock.mockReturnValue(["codex"])
+    getProbeEligiblePluginIdsMock.mockReturnValue(["codex"])
   })
 
   it("disables autostart when applyStartOnLogin receives false", async () => {
@@ -169,5 +169,42 @@ describe("useSettingsBootstrap", () => {
     })
 
     errorSpy.mockRestore()
+  })
+
+  it("publishes plugin settings before slower preference loads finish", async () => {
+    let resolveStartOnLogin: ((value: boolean) => void) | null = null
+    loadStartOnLoginMock.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        resolveStartOnLogin = resolve
+      })
+    )
+
+    const args = createArgs()
+    const normalized = { order: ["codex"], disabled: [] }
+    normalizePluginSettingsMock.mockReturnValueOnce(normalized)
+
+    renderHook(() => useSettingsBootstrap(args))
+
+    await waitFor(() => {
+      expect(args.setPluginsMeta).toHaveBeenCalledWith([
+        {
+          id: "codex",
+          name: "Codex",
+          iconUrl: "/codex.svg",
+          brandColor: "#000000",
+          lines: [],
+          primaryCandidates: [],
+        },
+      ])
+      expect(args.setPluginSettings).toHaveBeenCalledWith(normalized)
+    })
+
+    expect(args.setStartOnLogin).not.toHaveBeenCalled()
+
+    resolveStartOnLogin?.(true)
+
+    await waitFor(() => {
+      expect(args.setStartOnLogin).toHaveBeenCalledWith(true)
+    })
   })
 })

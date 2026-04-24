@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react"
+import { getVersion } from "@tauri-apps/api/app"
 import { isTauri } from "@tauri-apps/api/core"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
@@ -19,13 +20,24 @@ interface UseAppUpdateReturn {
   checkForUpdates: () => void
 }
 
-export function useAppUpdate(): UseAppUpdateReturn {
+interface UseAppUpdateOptions {
+  isDev?: boolean
+}
+
+export function isPrereleaseVersion(version: string): boolean {
+  return version.trim().includes("-")
+}
+
+export function useAppUpdate(options: UseAppUpdateOptions = {}): UseAppUpdateReturn {
+  const isDev = options.isDev ?? import.meta.env.DEV
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ status: "idle" })
   const statusRef = useRef<UpdateStatus>({ status: "idle" })
   const updateRef = useRef<Update | null>(null)
   const mountedRef = useRef(true)
   const inFlightRef = useRef({ checking: false, downloading: false, installing: false })
   const upToDateTimeoutRef = useRef<number | null>(null)
+  const updaterEnabledRef = useRef(false)
+  const updaterEligibilityResolvedRef = useRef(false)
 
   const setStatus = useCallback((next: UpdateStatus) => {
     statusRef.current = next
@@ -33,8 +45,34 @@ export function useAppUpdate(): UseAppUpdateReturn {
     setUpdateStatus(next)
   }, [])
 
+  const resolveUpdaterEligibility = useCallback(async () => {
+    if (!isTauri() || isDev) {
+      updaterEnabledRef.current = false
+      updaterEligibilityResolvedRef.current = true
+      return false
+    }
+
+    try {
+      const version = await getVersion()
+      const enabled = !isPrereleaseVersion(version)
+      updaterEnabledRef.current = enabled
+      updaterEligibilityResolvedRef.current = true
+      return enabled
+    } catch (err) {
+      console.error("Failed to get app version for updater:", err)
+      updaterEnabledRef.current = true
+      updaterEligibilityResolvedRef.current = true
+      return true
+    }
+  }, [isDev])
+
   const checkForUpdates = useCallback(async () => {
-    if (!isTauri()) return
+    if (!isTauri() || isDev) return
+    if (!updaterEligibilityResolvedRef.current) {
+      const enabled = await resolveUpdaterEligibility()
+      if (!enabled) return
+    }
+    if (!updaterEnabledRef.current) return
     if (inFlightRef.current.checking || inFlightRef.current.downloading || inFlightRef.current.installing) return
     if (statusRef.current.status === "ready") return
 
@@ -99,25 +137,32 @@ export function useAppUpdate(): UseAppUpdateReturn {
       console.error("Update check failed:", err)
       setStatus({ status: "error", message: "Update check failed" })
     }
-  }, [setStatus])
+  }, [isDev, resolveUpdaterEligibility, setStatus])
 
   useEffect(() => {
     mountedRef.current = true
-    void checkForUpdates()
+    let intervalId: number | null = null
 
-    // Check every 15 minutes
-    const intervalId = setInterval(() => {
+    void resolveUpdaterEligibility().then((enabled) => {
+      if (!enabled || !mountedRef.current) return
+
       void checkForUpdates()
-    }, 15 * 60 * 1000)
+
+      intervalId = window.setInterval(() => {
+        void checkForUpdates()
+      }, 15 * 60 * 1000)
+    })
 
     return () => {
       mountedRef.current = false
-      clearInterval(intervalId)
+      if (intervalId !== null) {
+        clearInterval(intervalId)
+      }
       if (upToDateTimeoutRef.current !== null) {
         clearTimeout(upToDateTimeoutRef.current)
       }
     }
-  }, [checkForUpdates])
+  }, [checkForUpdates, resolveUpdaterEligibility])
 
   const triggerInstall = useCallback(async () => {
     const update = updateRef.current
