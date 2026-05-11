@@ -5,6 +5,24 @@ import tailwindcss from "@tailwindcss/vite";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+// @ts-expect-error process is a nodejs global
+const coverageReportOnly = process.env.USAGEBAR_COVERAGE_REPORT_ONLY === "1";
+
+const coverageThresholds = coverageReportOnly
+  ? {
+      perFile: false,
+      branches: 0,
+      lines: 0,
+      functions: 0,
+      statements: 0,
+    }
+  : {
+      perFile: false,
+      branches: 90,
+      lines: 90,
+      functions: 90,
+      statements: 90,
+    };
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -43,13 +61,7 @@ export default defineConfig(async () => ({
         "src/hooks/use-dark-mode.ts",
       ],
       reporter: ["text", "html", "lcov"],
-      thresholds: {
-        perFile: false,
-        branches: 90,
-        lines: 90,
-        functions: 90,
-        statements: 90,
-      },
+      thresholds: coverageThresholds,
     },
   },
 
