@@ -5,13 +5,34 @@
   const PERIOD_MS = 5 * 60 * 60 * 1000
   const WEEK_MS = 7 * 24 * 60 * 60 * 1000
   const MONTH_MS = 30 * 24 * 60 * 60 * 1000
+  const TOKEN_FORMAT = { kind: "count", suffix: "tokens" }
+  const SEARCH_FORMAT = { kind: "count", suffix: "searches" }
+
+  function readString(value) {
+    if (typeof value !== "string") return null
+    const trimmed = value.trim()
+    return trimmed || null
+  }
+
+  function loadStoredApiKey(ctx) {
+    if (!ctx.host.providerSecrets || typeof ctx.host.providerSecrets.read !== "function") return null
+    try {
+      return readString(ctx.host.providerSecrets.read("apiKey"))
+    } catch (e) {
+      ctx.host.log.warn("provider secret read failed: " + String(e))
+      return null
+    }
+  }
 
   function loadApiKey(ctx) {
-    const zai = ctx.host.env.get("ZAI_API_KEY")
-    if (typeof zai === "string" && zai.trim()) return zai.trim()
+    const stored = loadStoredApiKey(ctx)
+    if (stored) return stored
 
-    const glm = ctx.host.env.get("GLM_API_KEY")
-    if (typeof glm === "string" && glm.trim()) return glm.trim()
+    const zai = readString(ctx.host.env.get("ZAI_API_KEY"))
+    if (zai) return zai
+
+    const glm = readString(ctx.host.env.get("GLM_API_KEY"))
+    if (glm) return glm
 
     return null
   }
@@ -98,10 +119,48 @@
     return fallback
   }
 
+  function numericField(value) {
+    if (typeof value === "number") return Number.isFinite(value) ? value : null
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : null
+    }
+    return null
+  }
+
+  function makeTokenProgress(ctx, label, item, periodDurationMs) {
+    if (!item) return null
+    const used = numericField(item.currentValue) ?? 0
+    const total = numericField(item.usage)
+    const resetsAt = item.nextResetTime ? ctx.util.toIso(item.nextResetTime) : undefined
+    if (total === null || total <= 0) {
+      const percent = numericField(item.percentage)
+      if (percent === null) return null
+      const percentOpts = {
+        label,
+        used: Math.max(0, percent),
+        limit: 100,
+        format: { kind: "percent" },
+        periodDurationMs,
+      }
+      if (resetsAt) percentOpts.resetsAt = resetsAt
+      return ctx.line.progress(percentOpts)
+    }
+    const opts = {
+      label,
+      used: Math.max(0, used),
+      limit: total,
+      format: TOKEN_FORMAT,
+      periodDurationMs,
+    }
+    if (resetsAt) opts.resetsAt = resetsAt
+    return ctx.line.progress(opts)
+  }
+
   function probe(ctx) {
     const apiKey = loadApiKey(ctx)
     if (!apiKey) {
-      throw "No ZAI_API_KEY found. Set up environment variable first."
+      throw "Z.ai API key missing. Save it in Setup, set ZAI_API_KEY, or set GLM_API_KEY."
     }
 
     const sub = fetchSubscription(ctx, apiKey)
@@ -124,44 +183,20 @@
       return { plan, lines }
     }
 
-    const used = typeof tokenLimit.percentage === "number" ? tokenLimit.percentage : 0
-    const resetsAt = tokenLimit.nextResetTime ? ctx.util.toIso(tokenLimit.nextResetTime) : undefined
-
-    const progressOpts = {
-      label: "Session",
-      used,
-      limit: 100,
-      format: { kind: "percent" },
-      periodDurationMs: PERIOD_MS,
-    }
-    if (resetsAt) {
-      progressOpts.resetsAt = resetsAt
-    }
-    lines.push(ctx.line.progress(progressOpts))
+    const sessionLine = makeTokenProgress(ctx, "Session", tokenLimit, PERIOD_MS)
+    if (sessionLine) lines.push(sessionLine)
 
     const weeklyTokenLimit = findLimit(limits, "TOKENS_LIMIT", 6)
     if (weeklyTokenLimit) {
-      const weeklyUsed = Number.isFinite(weeklyTokenLimit.percentage) ? weeklyTokenLimit.percentage : 0
-      const weeklyResetsAt = weeklyTokenLimit.nextResetTime ? ctx.util.toIso(weeklyTokenLimit.nextResetTime) : undefined
-
-      const weeklyOpts = {
-        label: "Weekly",
-        used: weeklyUsed,
-        limit: 100,
-        format: { kind: "percent" },
-        periodDurationMs: WEEK_MS,
-      }
-      if (weeklyResetsAt) {
-        weeklyOpts.resetsAt = weeklyResetsAt
-      }
-      lines.push(ctx.line.progress(weeklyOpts))
+      const weeklyLine = makeTokenProgress(ctx, "Weekly", weeklyTokenLimit, WEEK_MS)
+      if (weeklyLine) lines.push(weeklyLine)
     }
 
     const timeLimit = findLimit(limits, "TIME_LIMIT")
 
     if (timeLimit) {
-      const webUsed = typeof timeLimit.currentValue === "number" ? timeLimit.currentValue : 0
-      const webTotal = typeof timeLimit.usage === "number" ? timeLimit.usage : 0
+      const webUsed = numericField(timeLimit.currentValue) ?? 0
+      const webTotal = numericField(timeLimit.usage) ?? 0
       const now = new Date()
       const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
       const webResetsAt = timeLimit.nextResetTime
@@ -172,13 +207,15 @@
         label: "Web Searches",
         used: webUsed,
         limit: webTotal,
-        format: { kind: "count", suffix: "/ " + webTotal },
+        format: SEARCH_FORMAT,
         periodDurationMs: MONTH_MS,
       }
-      if (webResetsAt) {
-        webOpts.resetsAt = webResetsAt
+      if (webTotal > 0) {
+        if (webResetsAt) {
+          webOpts.resetsAt = webResetsAt
+        }
+        lines.push(ctx.line.progress(webOpts))
       }
-      lines.push(ctx.line.progress(webOpts))
     }
 
     return { plan, lines }

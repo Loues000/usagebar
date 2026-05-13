@@ -3,14 +3,38 @@
   var SECRETS_KEY = "apiKey@https://ampcode.com/"
   var API_URL = "https://ampcode.com/api/internal"
 
+  function readString(value) {
+    if (typeof value !== "string") return null
+    var trimmed = value.trim()
+    return trimmed || null
+  }
+
+  function loadStoredApiKey(ctx) {
+    if (!ctx.host.providerSecrets || typeof ctx.host.providerSecrets.read !== "function") return null
+    try {
+      var key = readString(ctx.host.providerSecrets.read("apiKey"))
+      if (key) {
+        ctx.host.log.info("api key loaded from provider secret")
+        return key
+      }
+    } catch (e) {
+      ctx.host.log.warn("provider secret read failed: " + String(e))
+    }
+    return null
+  }
+
   function loadApiKey(ctx) {
+    var stored = loadStoredApiKey(ctx)
+    if (stored) return stored
+
     if (!ctx.host.fs.exists(SECRETS_FILE)) return null
     try {
       var text = ctx.host.fs.readText(SECRETS_FILE)
       var parsed = ctx.util.tryParseJson(text)
-      if (parsed && parsed[SECRETS_KEY]) {
+      var fileKey = readString(parsed && parsed[SECRETS_KEY])
+      if (fileKey) {
         ctx.host.log.info("api key loaded from secrets file")
-        return parsed[SECRETS_KEY]
+        return fileKey
       }
     } catch (e) {
       ctx.host.log.warn("secrets file read failed: " + String(e))
@@ -87,7 +111,7 @@
   function probe(ctx) {
     var apiKey = loadApiKey(ctx)
     if (!apiKey) {
-      throw "Amp not installed. Install Amp Code to get started."
+      throw "Amp API key missing. Save it in Setup or install Amp Code and run `amp login`."
     }
 
     var result

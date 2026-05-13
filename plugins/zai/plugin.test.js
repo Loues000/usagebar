@@ -117,10 +117,28 @@ describe("zai plugin", () => {
     vi.resetModules()
   })
 
-  it("throws when no env vars set", async () => {
+  it("throws when no API key is configured", async () => {
     const ctx = makeCtx()
     const plugin = await loadPlugin()
-    expect(() => plugin.probe(ctx)).toThrow("No ZAI_API_KEY found. Set up environment variable first.")
+    expect(() => plugin.probe(ctx)).toThrow("Z.ai API key missing")
+  })
+
+  it("prefers stored provider API key over env vars", async () => {
+    const ctx = makeCtx()
+    ctx.host.providerSecrets.read.mockImplementation((key) => (key === "apiKey" ? "stored-key" : null))
+    ctx.host.env.get.mockImplementation((name) => {
+      if (name === "ZAI_API_KEY") return "zai-key"
+      if (name === "GLM_API_KEY") return "glm-key"
+      return null
+    })
+    mockHttp(ctx)
+
+    const plugin = await loadPlugin()
+    const result = plugin.probe(ctx)
+
+    expect(result.lines.find((l) => l.label === "Session")).toBeTruthy()
+    const authHeader = ctx.host.http.request.mock.calls[0][0].headers.Authorization
+    expect(authHeader).toBe("Bearer stored-key")
   })
 
   it("uses ZAI_API_KEY when set", async () => {
@@ -159,7 +177,7 @@ describe("zai plugin", () => {
     expect(authHeader).toBe("Bearer zai-key")
   })
 
-  it("renders session usage as percent from quota response", async () => {
+  it("renders session usage as token counts from quota response", async () => {
     const ctx = makeCtx()
     mockEnvWithKey(ctx, "test-key")
     mockHttp(ctx)
@@ -169,10 +187,45 @@ describe("zai plugin", () => {
     const line = result.lines.find((l) => l.label === "Session")
     expect(line).toBeTruthy()
     expect(line.type).toBe("progress")
-    expect(line.used).toBe(10)
-    expect(line.limit).toBe(100)
-    expect(line.format).toEqual({ kind: "percent" })
+    expect(line.used).toBe(1900000)
+    expect(line.limit).toBe(800000000)
+    expect(line.format).toEqual({ kind: "count", suffix: "tokens" })
     expect(line.periodDurationMs).toBe(5 * 60 * 60 * 1000)
+  })
+
+  it("keeps token limits when usage exceeds the limit", async () => {
+    const ctx = makeCtx()
+    mockEnvWithKey(ctx, "test-key")
+    ctx.host.http.request.mockImplementation((opts) => {
+      if (opts.url.includes("subscription")) {
+        return { status: 200, bodyText: JSON.stringify(SUBSCRIPTION_RESPONSE) }
+      }
+      return {
+        status: 200,
+        bodyText: JSON.stringify({
+          data: {
+            limits: [
+              {
+                type: "TOKENS_LIMIT",
+                usage: 100,
+                currentValue: 125,
+                unit: 3,
+              },
+            ],
+          },
+        }),
+      }
+    })
+
+    const plugin = await loadPlugin()
+    const result = plugin.probe(ctx)
+    const line = result.lines.find((l) => l.label === "Session")
+
+    expect(line).toMatchObject({
+      type: "progress",
+      used: 125,
+      limit: 100,
+    })
   })
 
   it("extracts plan name from subscription response", async () => {
@@ -295,7 +348,7 @@ describe("zai plugin", () => {
     expect(line.type).toBe("progress")
     expect(line.used).toBe(1095)
     expect(line.limit).toBe(4000)
-    expect(line.format).toEqual({ kind: "count", suffix: "/ 4000" })
+    expect(line.format).toEqual({ kind: "count", suffix: "searches" })
     expect(line.periodDurationMs).toBe(30 * 24 * 60 * 60 * 1000)
     const now = new Date()
     const expected1st = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
@@ -413,9 +466,37 @@ describe("zai plugin", () => {
     const result = plugin.probe(ctx)
     const session = result.lines.find((l) => l.label === "Session")
     const web = result.lines.find((l) => l.label === "Web Searches")
-    expect(session.used).toBe(0)
-    expect(web.used).toBe(0)
-    expect(web.limit).toBe(0)
+    expect(session.used).toBe(10)
+    expect(session.limit).toBe(100)
+    expect(session.format).toEqual({ kind: "percent" })
+    expect(web.used).toBe(1095)
+    expect(web.limit).toBe(4000)
+  })
+
+  it("does not render Web Searches progress without a positive limit", async () => {
+    const ctx = makeCtx()
+    mockEnvWithKey(ctx, "test-key")
+    ctx.host.http.request.mockImplementation((opts) => {
+      if (opts.url.includes("subscription")) {
+        return { status: 200, bodyText: JSON.stringify(SUBSCRIPTION_RESPONSE) }
+      }
+      return {
+        status: 200,
+        bodyText: JSON.stringify({
+          data: {
+            limits: [
+              { type: "TOKENS_LIMIT", usage: 100, currentValue: 10, unit: 3 },
+              { type: "TIME_LIMIT", usage: 0, currentValue: 5 },
+            ],
+          },
+        }),
+      }
+    })
+
+    const plugin = await loadPlugin()
+    const result = plugin.probe(ctx)
+
+    expect(result.lines.find((l) => l.label === "Web Searches")).toBeUndefined()
   })
 
   it("shows no-usage badge when token limit entry is missing", async () => {
@@ -434,7 +515,7 @@ describe("zai plugin", () => {
     expect(result.lines[0].text).toBe("No usage data")
   })
 
-  it("renders Weekly line with percent format and 7-day reset", async () => {
+  it("renders Weekly line with token count format and 7-day reset", async () => {
     const ctx = makeCtx()
     mockEnvWithKey(ctx, "test-key")
     ctx.host.http.request.mockImplementation((opts) => {
@@ -449,9 +530,9 @@ describe("zai plugin", () => {
     const line = result.lines.find((l) => l.label === "Weekly")
     expect(line).toBeTruthy()
     expect(line.type).toBe("progress")
-    expect(line.used).toBe(10)
-    expect(line.limit).toBe(100)
-    expect(line.format).toEqual({ kind: "percent" })
+    expect(line.used).toBe(4800000)
+    expect(line.limit).toBe(1600000000)
+    expect(line.format).toEqual({ kind: "count", suffix: "tokens" })
     expect(line.periodDurationMs).toBe(7 * 24 * 60 * 60 * 1000)
   })
 
@@ -522,10 +603,12 @@ describe("zai plugin", () => {
     const session = result.lines.find((l) => l.label === "Session")
     const weekly = result.lines.find((l) => l.label === "Weekly")
     expect(session).toBeTruthy()
-    expect(session.used).toBe(10)
+    expect(session.used).toBe(1900000)
+    expect(session.limit).toBe(800000000)
     expect(session.resetsAt).toBe(new Date(1738368000000).toISOString())
     expect(weekly).toBeTruthy()
-    expect(weekly.used).toBe(75)
+    expect(weekly.used).toBe(4800000)
+    expect(weekly.limit).toBe(1600000000)
     expect(weekly.resetsAt).toBe(new Date(1738972800000).toISOString())
   })
 })
